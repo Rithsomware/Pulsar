@@ -77,4 +77,21 @@ data:
             ignoredByScheduler: false
           - name: "nvidia.com/mig-3g.40gb"
             ignoredByScheduler: false
+      - urlPrefix: "http://{{ include "kgwe.fullname" . }}-scheduler.{{ .Release.Namespace }}.svc:8888"
+        filterVerb: "filter"
+        prioritizeVerb: "prioritize"
+        preemptVerb: "preempt"
+        bindVerb: "bind"
+        weight: 90
+        enableHTTPS: false
+        httpTimeout: 30s
+        nodeCacheCapable: false
+        ignorable: false
+        managedResources:
+          - name: "nvidia.com/gpu"
+            ignoredByScheduler: false
+          - name: "amd.com/gpu"
+            ignoredByScheduler: false
+          - name: "gpu.intel.com/i915"
+            ignoredByScheduler: false
 {{- end }}

@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY src/pulsar/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source
+COPY src/pulsar/ /app/pulsar/
+COPY src/pulsar/pulsar.yaml /app/pulsar.yaml
+
+ENV PYTHONPATH=/app
+ENV PULSAR_CONFIG=/app/pulsar.yaml
+
+EXPOSE 8080
+
+CMD ["python", "-m", "pulsar.cli", "server"]

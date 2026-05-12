@@ -175,6 +175,31 @@ spec:
                   type: boolean
                   default: false
                   description: Whether workload can be preempted
+                preferredGpuClass:
+                  type: string
+                  enum:
+                    - dgpu
+                    - igpu
+                    - any
+                  default: dgpu
+                  description: Preferred GPU class for workload execution
+                fallbackPolicy:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    fallbackGpuClass:
+                      type: string
+                      enum:
+                        - dgpu
+                        - igpu
+                      default: igpu
+                    maxWaitSeconds:
+                      type: integer
+                      minimum: 0
+                      default: 0
+                      description: Seconds to wait before falling back to alternate GPU class
                 podTemplate:
                   type: object
                   x-kubernetes-preserve-unknown-fields: true
@@ -212,6 +237,20 @@ spec:
                       profile:
                         type: string
                   description: Allocated MIG instances
+                assignedGpuClass:
+                  type: string
+                  enum:
+                    - dgpu
+                    - igpu
+                    - cpu
+                  description: Actual GPU class assigned after scheduling
+                fallbackApplied:
+                  type: boolean
+                  default: false
+                  description: Whether GPU class fallback was applied
+                fallbackReason:
+                  type: string
+                  description: Reason for GPU class fallback
                 schedulingScore:
                   type: integer
                   description: Quality score of the placement (0-100)

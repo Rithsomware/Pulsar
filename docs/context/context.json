@@ -1,0 +1,61 @@
+{
+  "snapshot": {
+    "date": "2026-05-12",
+    "timezone": "Asia/Kolkata",
+    "intent": "Repository context pack for contributor onboarding and migration planning"
+  },
+  "project_identity": {
+    "primary_name": "PULSAR",
+    "description": "GPU queue and fairness control plane for shared AI clusters",
+    "repo_state": "hybrid_pulsar_kgwe_transition"
+  },
+  "runtime_paths": {
+    "python_control_plane": {
+      "status": "active",
+      "entrypoints": [
+        "src/pulsar/cli.py",
+        "src/pulsar/api_server.py",
+        "src/pulsar/control_plane.py"
+      ]
+    },
+    "go_modules": {
+      "status": "partial",
+      "packages": [
+        "src/scheduler",
+        "src/discovery",
+        "src/sharing",
+        "src/api",
+        "src/monitoring"
+      ]
+    }
+  },
+  "packaging": {
+    "python": {
+      "file": "pyproject.toml",
+      "project_name": "pulsar-gpu-control-plane",
+      "cli_script": "pulsar"
+    },
+    "go": {
+      "file": "go.mod",
+      "module": "github.com/nvidia/kgwe"
+    }
+  },
+  "deployment": {
+    "direct_manifest": "deploy/pulsar.yaml",
+    "helm_chart": "deploy/helm/kgwe",
+    "state": "mixed_naming"
+  },
+  "tests": {
+    "python_unit_tests": "tests/test_pulsar.py",
+    "status": "present"
+  },
+  "known_gaps": [
+    "mixed_pulsar_kgwe_naming",
+    "makefile_targets_reference_missing_cmd_directory",
+    "scheduler_extender_bind_path_references_cp_k8s_shape",
+    "generated_artifact_noise_db_and_coverage_files",
+    "deployment_surface_split_manifest_and_helm"
+  ],
+  "docs_index": "docs/context/README.md"
+}
+

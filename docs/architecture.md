@@ -1,9 +1,10 @@
-# KGWE Architecture
+# PULSAR Architecture
 
-This document provides a comprehensive overview of the Kubernetes GPU Workload Enhancer (KGWE) architecture, including component interactions, data flows, and design decisions.
+This document provides a comprehensive overview of the PULSAR GPU Queue & Fairness Control Plane architecture, including the PULSAR control layer, the underlying KGWE execution engine, component interactions, data flows, and design decisions.
 
 ## Table of Contents
 
+- [PULSAR Control Plane](#pulsar-control-plane)
 - [System Overview](#system-overview)
 - [Component Architecture](#component-architecture)
 - [Data Flow](#data-flow)
@@ -15,38 +16,92 @@ This document provides a comprehensive overview of the Kubernetes GPU Workload E
 
 ---
 
+## PULSAR Control Plane
+
+PULSAR adds a queue and fairness control layer on top of the KGWE execution engine. All GPU workloads flow through PULSAR before reaching the underlying topology-aware scheduler.
+
+### PULSAR Pipeline
+
+```mermaid
+flowchart LR
+    subgraph "PULSAR Control Plane"
+        QM["Queue Manager<br/>(per-user FIFO)"]
+        FS["Fair Scheduler<br/>(DRF-based)"]
+        AC["Admission Controller<br/>(quota + capacity)"]
+        MC["Metrics Collector"]
+    end
+
+    subgraph "KGWE Execution Engine"
+        SCHED["Topology-Aware<br/>Scheduler"]
+        OPT["Workload<br/>Optimizer"]
+    end
+
+    Submit["Job Submission"] --> QM
+    QM --> FS
+    FS --> AC
+    AC --> SCHED
+    SCHED --> OPT
+    OPT --> Execute["GPU Execution"]
+
+    QM -.-> MC
+    FS -.-> MC
+    AC -.-> MC
+
+    style QM fill:#7c3aed,color:#fff
+    style FS fill:#7c3aed,color:#fff
+    style AC fill:#7c3aed,color:#fff
+    style MC fill:#7c3aed,color:#fff
+    style SCHED fill:#76b900,color:#fff
+    style OPT fill:#76b900,color:#fff
+```
+
+### PULSAR Components
+
+| Component | Responsibility | Key Algorithm |
+|-----------|---------------|---------------|
+| **Queue Manager** | Per-user FIFO queues, fairness-weighted dequeuing | Round-robin with DRF scoring |
+| **Fair Scheduler** | Tracks GPU usage, computes priority scores | `priority = 1/(1 + usage)` |
+| **Admission Controller** | Enforces capacity limits and user quotas | Quota + cluster capacity check |
+| **Metrics Collector** | Tracks job lifecycle, GPU-hours, wait times | Counter-based aggregation |
+| **Control Plane** | Orchestrates the full pipeline | Event-driven orchestration |
+
+---
+
 ## System Overview
 
-KGWE is a Kubernetes-native platform that optimizes GPU resource utilization through topology-aware scheduling, ML-based workload prediction, and intelligent GPU partitioning.
+The combined PULSAR + KGWE system is a Kubernetes-native platform that optimizes GPU resource utilization through queue-based fairness, topology-aware scheduling, ML-based workload prediction, and intelligent GPU partitioning.
 
 ```mermaid
 graph TB
     subgraph "Kubernetes Cluster"
-        subgraph "Control Plane"
+        subgraph "PULSAR Control Plane"
+            QM[Queue Manager]
+            FS[Fair Scheduler]
+            AC[Admission Controller]
+        end
+
+        subgraph "KGWE Execution Engine"
             API[Kubernetes API Server]
             KS[kube-scheduler]
             KGWE[KGWE Scheduler Extender]
-        end
-
-        subgraph "KGWE Control Plane"
             CTRL[Controller]
-            OPT[Optimizer<br/>ML Service]
+            OPT["Optimizer (ML)"]
             MIG[MIG Controller]
             COST[Cost Engine]
             DISC[Discovery Service]
         end
 
         subgraph "GPU Nodes"
-            N1[Node 1<br/>8x H100]
-            N2[Node 2<br/>8x H100]
-            N3[Node N<br/>8x H100]
-
+            N1["Node 1 (8x H100)"]
+            N2["Node 2 (8x H100)"]
+            N3["Node N (8x H100)"]
             A1[KGWE Agent]
             A2[KGWE Agent]
             A3[KGWE Agent]
         end
     end
 
+    QM --> FS --> AC --> KGWE
     API --> KS
     KS --> KGWE
     KGWE --> CTRL
@@ -63,6 +118,9 @@ graph TB
     A2 --> N2
     A3 --> N3
 
+    style QM fill:#7c3aed,color:#fff
+    style FS fill:#7c3aed,color:#fff
+    style AC fill:#7c3aed,color:#fff
     style KGWE fill:#76b900
     style CTRL fill:#76b900
     style OPT fill:#76b900

@@ -45,6 +45,9 @@ spec:
             - name: metrics
               containerPort: 10251
               protocol: TCP
+            - name: extender
+              containerPort: 8888
+              protocol: TCP
           livenessProbe:
             httpGet:
               path: /healthz
@@ -103,6 +106,10 @@ spec:
       targetPort: https
       protocol: TCP
       name: https
+    - port: 8888
+      targetPort: extender
+      protocol: TCP
+      name: extender
   selector:
     {{- include "kgwe.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: scheduler

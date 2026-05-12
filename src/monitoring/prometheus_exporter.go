@@ -56,12 +56,12 @@ type ExporterConfig struct {
 // DefaultExporterConfig returns sensible defaults
 func DefaultExporterConfig() ExporterConfig {
 	return ExporterConfig{
-		ListenAddress:        ":9400",
-		MetricsPath:          "/metrics",
-		CollectionInterval:   15 * time.Second,
-		EnableDCGMMetrics:    true,
+		ListenAddress:         ":9400",
+		MetricsPath:           "/metrics",
+		CollectionInterval:    15 * time.Second,
+		EnableDCGMMetrics:     true,
 		EnableTopologyMetrics: true,
-		EnableCostMetrics:    true,
+		EnableCostMetrics:     true,
 	}
 }
 
@@ -92,43 +92,59 @@ const (
 // KGWEMetrics holds all KGWE-specific metrics
 type KGWEMetrics struct {
 	// Scheduler metrics
-	SchedulingLatencyMs        *HistogramMetric
-	SchedulingAttempts         *CounterMetric
-	SchedulingSuccesses        *CounterMetric
-	SchedulingFailures         *CounterMetric
-	TopologyOptimalPlacements  *CounterMetric
-	PreemptionCount            *CounterMetric
+	SchedulingLatencyMs       *HistogramMetric
+	SchedulingAttempts        *CounterMetric
+	SchedulingSuccesses       *CounterMetric
+	SchedulingFailures        *CounterMetric
+	TopologyOptimalPlacements *CounterMetric
+	PreemptionCount           *CounterMetric
 
 	// GPU metrics
-	GPUCount                   *GaugeMetric
-	GPUUtilization             *GaugeVecMetric
-	GPUMemoryUsed              *GaugeVecMetric
-	GPUMemoryTotal             *GaugeVecMetric
-	GPUTemperature             *GaugeVecMetric
-	GPUPowerWatts              *GaugeVecMetric
-	GPUHealthStatus            *GaugeVecMetric
+	GPUCount        *GaugeMetric
+	GPUUtilization  *GaugeVecMetric
+	GPUMemoryUsed   *GaugeVecMetric
+	GPUMemoryTotal  *GaugeVecMetric
+	GPUTemperature  *GaugeVecMetric
+	GPUPowerWatts   *GaugeVecMetric
+	GPUHealthStatus *GaugeVecMetric
 
 	// MIG metrics
-	MIGInstanceCount           *GaugeVecMetric
-	MIGInstanceUtilization     *GaugeVecMetric
-	MIGAllocations             *CounterMetric
-	MIGReleases                *CounterMetric
+	MIGInstanceCount       *GaugeVecMetric
+	MIGInstanceUtilization *GaugeVecMetric
+	MIGAllocations         *CounterMetric
+	MIGReleases            *CounterMetric
 
 	// Topology metrics
-	NVLinkBandwidth            *GaugeVecMetric
-	PCIeBandwidth              *GaugeVecMetric
-	TopologyScore              *GaugeVecMetric
+	NVLinkBandwidth *GaugeVecMetric
+	PCIeBandwidth   *GaugeVecMetric
+	TopologyScore   *GaugeVecMetric
 
 	// Cost metrics
-	GPUCostTotal               *CounterVecMetric
-	GPUCostPerHour             *GaugeVecMetric
-	BudgetUtilization          *GaugeVecMetric
-	CostSavingsRecommended     *GaugeMetric
+	GPUCostTotal           *CounterVecMetric
+	GPUCostPerHour         *GaugeVecMetric
+	BudgetUtilization      *GaugeVecMetric
+	CostSavingsRecommended *GaugeMetric
 
 	// Workload metrics
-	ActiveWorkloads            *GaugeVecMetric
-	WorkloadDuration           *HistogramMetric
-	WorkloadQueueDepth         *GaugeMetric
+	ActiveWorkloads    *GaugeVecMetric
+	WorkloadDuration   *HistogramMetric
+	WorkloadQueueDepth *GaugeMetric
+
+	// Queue controller metrics
+	QueueDepthByTenant     *GaugeVecMetric
+	QueueDepthByGPUClass   *GaugeVecMetric
+	WaitTimeHistogram      *HistogramMetric
+	AgingBoostsTotal       *CounterMetric
+	StarvationEventsTotal  *CounterMetric
+	PreemptionSignalsTotal *CounterMetric
+
+	// Fairness metrics
+	GPUShareByTenant         *GaugeVecMetric
+	DRFDominantShareByTenant *GaugeVecMetric
+	PerTenantPreemptions     *CounterVecMetric
+
+	// GPU class visibility metrics
+	GPUClassJobsTotal *CounterVecMetric
 }
 
 // GaugeMetric is a simple gauge metric
@@ -408,6 +424,66 @@ func (e *PrometheusExporter) initMetrics() {
 			name: "kgwe_workload_queue_depth",
 			help: "Number of workloads waiting to be scheduled",
 		},
+
+		// Queue controller metrics
+		QueueDepthByTenant: &GaugeVecMetric{
+			name:   "kgwe_queue_depth_by_tenant",
+			help:   "Current queue depth per tenant",
+			labels: []string{"tenant"},
+			values: make(map[string]float64),
+		},
+		QueueDepthByGPUClass: &GaugeVecMetric{
+			name:   "kgwe_queue_depth_by_gpu_class",
+			help:   "Current queue depth by GPU class",
+			labels: []string{"gpu_class"},
+			values: make(map[string]float64),
+		},
+		WaitTimeHistogram: &HistogramMetric{
+			name:    "kgwe_wait_time_seconds",
+			help:    "Histogram of queue wait times in seconds",
+			buckets: []float64{10, 60, 300, 600, 1800, 3600},
+			counts:  make(map[float64]int64),
+		},
+		AgingBoostsTotal: &CounterMetric{
+			name: "kgwe_aging_boosts_total",
+			help: "Total priority aging boosts applied",
+		},
+		StarvationEventsTotal: &CounterMetric{
+			name: "kgwe_starvation_events_total",
+			help: "Total starvation prevention events",
+		},
+		PreemptionSignalsTotal: &CounterMetric{
+			name: "kgwe_preemption_signals_total",
+			help: "Total preemption signals emitted",
+		},
+
+		// Fairness metrics
+		GPUShareByTenant: &GaugeVecMetric{
+			name:   "kgwe_gpu_share_by_tenant",
+			help:   "Tenant GPU share fraction",
+			labels: []string{"tenant"},
+			values: make(map[string]float64),
+		},
+		DRFDominantShareByTenant: &GaugeVecMetric{
+			name:   "kgwe_drf_dominant_share_by_tenant",
+			help:   "Tenant DRF dominant resource share",
+			labels: []string{"tenant"},
+			values: make(map[string]float64),
+		},
+		PerTenantPreemptions: &CounterVecMetric{
+			name:   "kgwe_preemptions_by_tenant_total",
+			help:   "Preemptions per tenant",
+			labels: []string{"tenant"},
+			values: make(map[string]float64),
+		},
+
+		// GPU class visibility metrics
+		GPUClassJobsTotal: &CounterVecMetric{
+			name:   "kgwe_gpu_class_jobs_total",
+			help:   "Jobs assigned by GPU class",
+			labels: []string{"gpu_class"},
+			values: make(map[string]float64),
+		},
 	}
 }
 
@@ -582,6 +658,22 @@ func (e *PrometheusExporter) metricsHandler(w http.ResponseWriter, r *http.Reque
 	// Write workload metrics
 	e.writeVecMetric(w, e.metrics.ActiveWorkloads)
 	e.writeMetric(w, e.metrics.WorkloadQueueDepth)
+
+	// Write queue controller metrics
+	e.writeVecMetric(w, e.metrics.QueueDepthByTenant)
+	e.writeVecMetric(w, e.metrics.QueueDepthByGPUClass)
+	e.writeMetric(w, e.metrics.WaitTimeHistogram)
+	e.writeMetric(w, e.metrics.AgingBoostsTotal)
+	e.writeMetric(w, e.metrics.StarvationEventsTotal)
+	e.writeMetric(w, e.metrics.PreemptionSignalsTotal)
+
+	// Write fairness metrics
+	e.writeVecMetric(w, e.metrics.GPUShareByTenant)
+	e.writeVecMetric(w, e.metrics.DRFDominantShareByTenant)
+	e.writeVecCounterMetric(w, e.metrics.PerTenantPreemptions)
+
+	// Write GPU class visibility metrics
+	e.writeVecCounterMetric(w, e.metrics.GPUClassJobsTotal)
 }
 
 func (e *PrometheusExporter) writeMetric(w http.ResponseWriter, m Metric) {

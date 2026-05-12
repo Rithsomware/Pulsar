@@ -75,6 +75,24 @@ rules:
   - apiGroups: ["kgwe.nvidia.io"]
     resources: ["gpubudgets/status"]
     verbs: ["get", "update", "patch"]
+  - apiGroups: ["kgwe.nvidia.io"]
+    resources: ["pulsarqueues"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kgwe.nvidia.io"]
+    resources: ["pulsarqueues/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["kgwe.nvidia.io"]
+    resources: ["fairnesspolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kgwe.nvidia.io"]
+    resources: ["fairnesspolicies/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["kgwe.nvidia.io"]
+    resources: ["tenantquotas"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kgwe.nvidia.io"]
+    resources: ["tenantquotas/status"]
+    verbs: ["get", "update", "patch"]
 
   # Coordination for leader election
   - apiGroups: ["coordination.k8s.io"]
@@ -158,10 +176,10 @@ rules:
 
   # KGWE resources for scheduling decisions
   - apiGroups: ["kgwe.nvidia.io"]
-    resources: ["gpuworkloads", "migstrategies", "gpubudgets"]
+    resources: ["gpuworkloads", "migstrategies", "gpubudgets", "pulsarqueues", "fairnesspolicies", "tenantquotas"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["kgwe.nvidia.io"]
-    resources: ["gpuworkloads/status"]
+    resources: ["gpuworkloads/status", "tenantquotas/status"]
     verbs: ["get", "update", "patch"]
 {{- end }}
 ---

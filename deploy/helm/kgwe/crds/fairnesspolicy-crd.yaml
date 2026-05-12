@@ -1,0 +1,181 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: fairnesspolicies.kgwe.nvidia.io
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+  labels:
+    app.kubernetes.io/name: kgwe
+    app.kubernetes.io/part-of: kgwe
+spec:
+  group: kgwe.nvidia.io
+  names:
+    kind: FairnessPolicy
+    listKind: FairnessPolicyList
+    plural: fairnesspolicies
+    singular: fairnesspolicy
+    shortNames:
+      - fp
+      - fairpol
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Algorithm
+          type: string
+          jsonPath: .spec.algorithm
+        - name: Active
+          type: boolean
+          jsonPath: .status.active
+        - name: JainIndex
+          type: number
+          jsonPath: .status.jainsIndex
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: FairnessPolicy defines cluster-wide GPU fairness and scheduling policy rules
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              properties:
+                algorithm:
+                  type: string
+                  enum:
+                    - weighted_fair_share
+                    - drf
+                    - max_min_fairness
+                    - strict_priority
+                  default: drf
+                  description: Fairness algorithm to apply
+                drfResourceDimensions:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - gpu_count
+                      - gpu_memory
+                      - gpu_bandwidth
+                  default:
+                    - gpu_count
+                    - gpu_memory
+                  description: Resource dimensions for DRF calculation
+                weightedFairShare:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    weightField:
+                      type: string
+                      default: weight
+                      description: Field in TenantQuota to use as weight
+                preemptionPolicy:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    maxPreemptionsPerCycle:
+                      type: integer
+                      minimum: 0
+                      maximum: 100
+                      default: 3
+                    gracePeriodSeconds:
+                      type: integer
+                      minimum: 0
+                      maximum: 300
+                      default: 30
+                    minPriorityDifference:
+                      type: integer
+                      minimum: 0
+                      maximum: 100
+                      default: 1
+                      description: Minimum priority gap required for preemption
+                gpuClassWeights:
+                  type: object
+                  properties:
+                    dgpuWeight:
+                      type: number
+                      default: 1.0
+                      description: Fairness weight multiplier for dGPU allocations
+                    igpuWeight:
+                      type: number
+                      default: 0.5
+                      description: Fairness weight multiplier for iGPU allocations
+                rebalanceInterval:
+                  type: string
+                  default: 30s
+                  description: Interval for fairness re-evaluation
+                enforceQuotas:
+                  type: boolean
+                  default: true
+                  description: Whether to enforce tenant quota limits
+            status:
+              type: object
+              properties:
+                active:
+                  type: boolean
+                  description: Whether policy is currently active
+                jainsIndex:
+                  type: number
+                  description: Current Jain's fairness index (0-1)
+                lastRebalanceTime:
+                  type: string
+                  format: date-time
+                tenantShares:
+                  type: object
+                  additionalProperties:
+                    type: number
+                  description: Current calculated fair share per tenant
+                violations:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      tenant:
+                        type: string
+                      resource:
+                        type: string
+                      requested:
+                        type: number
+                      fairShare:
+                        type: number
+                      severity:
+                        type: string
+                        enum:
+                          - warning
+                          - critical
+                  description: Current fairness violations
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

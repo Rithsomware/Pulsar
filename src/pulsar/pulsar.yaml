@@ -1,0 +1,52 @@
+cluster:
+  total_gpus: 16
+  gpu_memory_gb: 6
+  gpu_memory_mb: 6144
+  gpu_resource_name: nvidia.com/gpu  # nvidia.com/gpu | amd.com/gpu
+  dgpu_resource_name: nvidia.com/gpu
+  igpu_resource_name: gpu.intel.com/i915
+  nodes:
+    - gpu-node-1
+    - gpu-node-2
+
+scheduling:
+  policy: fair_share  # fifo | fair_share | priority | backfill
+  scheduling_interval_seconds: 2
+  preemption:
+    enabled: true
+    grace_period_seconds: 30
+    max_preemptions_per_cycle: 3
+  fallback:
+    preferred_gpu_class: dgpu
+    fallback_gpu_class: igpu
+    max_dgpu_wait_seconds: 0
+  queue_controller:
+    aging_enabled: true
+    aging_boost_interval_seconds: 30.0
+    starvation_threshold_seconds: 60.0
+
+quotas:
+  ml-team-alpha:
+    max_gpus: 8
+    max_jobs: 10
+    weight: 1.0
+  ml-team-beta:
+    max_gpus: 6
+    max_jobs: 8
+    weight: 1.0
+  ml-team-gamma:
+    max_gpus: 4
+    max_jobs: 5
+    weight: 0.5
+
+api:
+  host: 0.0.0.0
+  port: 8080
+
+persistence:
+  database: pulsar.db
+  enabled: true
+
+logging:
+  level: INFO
+  format: text  # text | json

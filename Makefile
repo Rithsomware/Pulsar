@@ -1,4 +1,5 @@
-# KGWE - Kubernetes GPU Workload Enhancer
+# PULSAR - GPU Queue & Fairness Control Plane
+# Built on KGWE (Kubernetes GPU Workload Enhancer)
 # Makefile for building, testing, and deploying
 
 # Version and build info
@@ -82,7 +83,7 @@ test-go:
 
 test-python:
 	@echo "Running Python tests..."
-	cd src/optimizer && python -m pytest tests/ -v --cov=.
+	python -m pytest tests/ -v
 
 ## Run linting
 lint: lint-go lint-python
@@ -197,14 +198,51 @@ docs:
 	@echo "Generating documentation..."
 	go doc -all ./... > docs/api-reference.md
 
+
+## ─── PULSAR Control Plane ─────────────────────────────────
+
+## Install PULSAR dependencies
+pulsar-deps:
+	@echo "Installing PULSAR dependencies..."
+	pip install -r src/pulsar/requirements.txt
+
+## Run PULSAR API server
+run-pulsar:
+	@echo "Starting PULSAR Control Plane..."
+	cd src && python -m pulsar.cli server
+
+## Run PULSAR demo
+pulsar-demo:
+	@echo "Running PULSAR demo..."
+	cd src && python -m pulsar.demo
+
+## Run PULSAR tests
+pulsar-test:
+	@echo "Running PULSAR tests..."
+	python -m pytest tests/test_pulsar.py -v --tb=short
+
+## Build PULSAR Docker image
+docker-pulsar:
+	@echo "Building PULSAR Docker image..."
+	$(DOCKER) build -t $(REGISTRY)/pulsar-control-plane:$(VERSION) \
+		-f docker/Dockerfile.pulsar .
+
 ## Show help
 help:
-	@echo "KGWE - Kubernetes GPU Workload Enhancer"
+	@echo "PULSAR — GPU Queue & Fairness Control Plane"
+	@echo "Built on KGWE (Kubernetes GPU Workload Enhancer)"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make <target>"
 	@echo ""
-	@echo "Targets:"
+	@echo "PULSAR Targets:"
+	@echo "  pulsar-deps      Install PULSAR Python dependencies"
+	@echo "  run-pulsar       Start the PULSAR API server"
+	@echo "  pulsar-demo      Run the built-in demo"
+	@echo "  pulsar-test      Run PULSAR unit tests"
+	@echo "  docker-pulsar    Build PULSAR Docker image"
+	@echo ""
+	@echo "KGWE Targets:"
 	@echo "  all              Build all components (default)"
 	@echo "  build            Build all Go components"
 	@echo "  test             Run all tests"
@@ -216,9 +254,9 @@ help:
 	@echo "  uninstall        Remove from Kubernetes"
 	@echo "  clean            Clean build artifacts"
 	@echo "  deps             Download dependencies"
-	@echo "  help             Show this help message"
 	@echo ""
 	@echo "Variables:"
 	@echo "  VERSION          Version tag (default: $(VERSION))"
 	@echo "  REGISTRY         Docker registry (default: $(REGISTRY))"
 	@echo "  NAMESPACE        Kubernetes namespace (default: $(NAMESPACE))"
+

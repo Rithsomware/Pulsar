@@ -1,0 +1,192 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tenantquotas.kgwe.nvidia.io
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+  labels:
+    app.kubernetes.io/name: kgwe
+    app.kubernetes.io/part-of: kgwe
+spec:
+  group: kgwe.nvidia.io
+  names:
+    kind: TenantQuota
+    listKind: TenantQuotaList
+    plural: tenantquotas
+    singular: tenantquota
+    shortNames:
+      - tq
+      - tenantq
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Tenant
+          type: string
+          jsonPath: .spec.tenant
+        - name: MaxGPUs
+          type: integer
+          jsonPath: .spec.maxGPUs
+        - name: UsedGPUs
+          type: integer
+          jsonPath: .status.usedGPUs
+        - name: Weight
+          type: number
+          jsonPath: .spec.weight
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: TenantQuota defines GPU resource quotas and fair-share weights per tenant
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - tenant
+              properties:
+                tenant:
+                  type: string
+                  description: Tenant identifier (user, team, or namespace)
+                maxGPUs:
+                  type: integer
+                  minimum: 0
+                  maximum: 1024
+                  default: 8
+                  description: Maximum GPUs this tenant can allocate simultaneously
+                maxJobs:
+                  type: integer
+                  minimum: 0
+                  maximum: 10000
+                  default: 10
+                  description: Maximum concurrent jobs for this tenant
+                maxQueueDepth:
+                  type: integer
+                  minimum: 0
+                  maximum: 10000
+                  default: 50
+                  description: Maximum queued jobs for this tenant
+                weight:
+                  type: number
+                  minimum: 0.01
+                  maximum: 1000.0
+                  default: 1.0
+                  description: Fair-share weight for weighted scheduling and DRF
+                maxGPUMemoryGB:
+                  type: integer
+                  minimum: 0
+                  maximum: 1000000
+                  default: 0
+                  description: Maximum GPU memory allocation (0 = unlimited)
+                gpuClassPreferences:
+                  type: object
+                  properties:
+                    preferred:
+                      type: string
+                      enum:
+                        - dgpu
+                        - igpu
+                        - any
+                      default: dgpu
+                    fallback:
+                      type: string
+                      enum:
+                        - dgpu
+                        - igpu
+                        - any
+                      default: igpu
+                    maxWaitSeconds:
+                      type: integer
+                      minimum: 0
+                      default: 0
+                timeWindowHours:
+                  type: integer
+                  minimum: 1
+                  maximum: 720
+                  default: 24
+                  description: Rolling window for GPU-hour quota enforcement
+                maxGPUHours:
+                  type: number
+                  minimum: 0
+                  default: 0
+                  description: Maximum GPU-hours in the time window (0 = unlimited)
+                preemptible:
+                  type: boolean
+                  default: true
+                  description: Whether this tenant's jobs can be preempted
+                priorityClass:
+                  type: string
+                  default: default
+                  description: Default Kubernetes priority class for tenant jobs
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Additional labels applied to tenant workloads
+                annotations:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Additional annotations applied to tenant workloads
+            status:
+              type: object
+              properties:
+                usedGPUs:
+                  type: integer
+                  description: Currently allocated GPUs
+                usedGPUMemoryGB:
+                  type: integer
+                  description: Currently allocated GPU memory in GB
+                activeJobs:
+                  type: integer
+                  description: Number of currently running jobs
+                queuedJobs:
+                  type: integer
+                  description: Number of queued jobs
+                gpuHoursUsed:
+                  type: number
+                  description: GPU-hours consumed in current window
+                lastAdmission:
+                  type: string
+                  format: date-time
+                  description: Timestamp of last successful admission
+                fairnessShare:
+                  type: number
+                  description: Current fair share fraction
+                dominantResource:
+                  type: string
+                  description: Dominant resource for DRF calculations
+                dominantShare:
+                  type: number
+                  description: Dominant resource share fraction
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

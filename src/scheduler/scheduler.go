@@ -549,7 +549,7 @@ func (s *TopologyAwareScheduler) calculateResourceScore(
 		score += 10
 	}
 
-	return min(100, score)
+	return minInt(100, score)
 }
 
 // calculateBalanceScore scores based on cluster balance
@@ -574,7 +574,7 @@ func (s *TopologyAwareScheduler) calculateBalanceScore(node *discovery.NodeTopol
 	usageRatio := float64(nodeAllocations) / float64(totalGPUs)
 	score := int(100 * (1 - usageRatio))
 
-	return max(0, score)
+	return maxInt(0, score)
 }
 
 // getAvailableGPUs returns GPUs available for allocation
@@ -828,14 +828,14 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
 }
 
-func max(a, b int) int {
+func maxInt(a, b int) int {
 	if a > b {
 		return a
 	}
