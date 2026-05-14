@@ -1,0 +1,52 @@
+cluster:
+  total_gpus: 16
+  gpu_memory_gb: 6
+  gpu_memory_mb: 6144
+  gpu_resource_name: nvidia.com/gpu
+  dgpu_resource_name: nvidia.com/gpu
+  igpu_resource_name: gpu.intel.com/i915
+  nodes:
+    - showcase-node-1
+    - showcase-node-2
+
+scheduling:
+  policy: fair_share
+  scheduling_interval_seconds: 2
+  preemption:
+    enabled: true
+    grace_period_seconds: 30
+    max_preemptions_per_cycle: 3
+  fallback:
+    preferred_gpu_class: dgpu
+    fallback_gpu_class: igpu
+    max_dgpu_wait_seconds: 0
+  queue_controller:
+    aging_enabled: true
+    aging_boost_interval_seconds: 30.0
+    starvation_threshold_seconds: 60.0
+
+quotas:
+  team-alpha:
+    max_gpus: 16
+    max_jobs: 20
+    weight: 1.0
+  team-beta:
+    max_gpus: 16
+    max_jobs: 20
+    weight: 1.0
+  team-gamma:
+    max_gpus: 16
+    max_jobs: 20
+    weight: 0.5
+
+api:
+  host: 0.0.0.0
+  port: 8080
+
+persistence:
+  database: /home/rithsomware/Downloads/Pulsar/.showcase.db
+  enabled: true
+
+logging:
+  level: INFO
+  format: text

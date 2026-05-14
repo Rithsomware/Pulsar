@@ -11,6 +11,7 @@ src/pulsar/control_plane.py
 src/pulsar/dashboard.py
 src/pulsar/demo.py
 src/pulsar/example_launch_jobs.py
+src/pulsar/example_simulation.py
 src/pulsar/executor.py
 src/pulsar/fair_scheduler.py
 src/pulsar/gpu_discovery.py
@@ -20,9 +21,9 @@ src/pulsar/k8s_integration.py
 src/pulsar/metrics.py
 src/pulsar/persistence.py
 src/pulsar/preemption.py
+src/pulsar/pulsar_types.py
 src/pulsar/queue_controller.py
 src/pulsar/queue_manager.py
-src/pulsar/types.py
 src/pulsar_gpu_control_plane.egg-info/PKG-INFO
 src/pulsar_gpu_control_plane.egg-info/SOURCES.txt
 src/pulsar_gpu_control_plane.egg-info/dependency_links.txt

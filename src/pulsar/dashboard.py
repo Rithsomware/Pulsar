@@ -222,7 +222,7 @@ function rJobs(d){
   for(const[jid,j]of Object.entries(jobs)){const a=elapsed(j.started_at),pid=pids[j.job_id||jid]||'-';
     const lane=(j.assigned_gpu_class||j.preferred_gpu_class||'dgpu').toUpperCase();
     const fb=j.fallback_applied?'<div style="margin-top:2px"><span class="badge" style="background:rgba(251,191,36,0.12);color:var(--yellow);font-size:0.6rem" title="'+(j.fallback_reason||'fallback')+'">FALLBACK</span></div>':'';
-    r+='<tr><td><code>'+(j.job_id||jid)+'</code></td><td>'+(j.user||'')+'</td><td>'+(j.gpu_required||0)+'</td><td style="font-family:var(--mono);color:var(--green);font-weight:600">'+pid+'</td><td>'+badge(j.status||'RUNNING')+'</td><td>'+(j.priority||'NORMAL')+'</td><td>'+(j.workload_type||'')+'</td><td style="font-family:var(--mono);font-size:0.75rem;text-align:center">'+lane+fb+'</td><td style="font-family:var(--mono);font-size:0.75rem;color:var(--accent)">'+a+'</td><td><button onclick="completeJob(\\''+(j.job_id||jid)+'\\')" style="background:none;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:0.7rem">kill</button></td></tr>';}
+    r+='<tr><td><code>'+(j.job_id||jid)+'</code></td><td>'+(j.user||'')+'</td><td>'+(j.gpu_required||0)+'</td><td style="font-family:var(--mono);color:var(--green);font-weight:600">'+pid+'</td><td>'+badge(j.status||'RUNNING')+'</td><td>'+(j.priority||'NORMAL')+'</td><td>'+(j.workload_type||'')+'</td><td style="font-family:var(--mono);font-size:0.75rem;text-align:center">'+lane+fb+'</td><td style="font-family:var(--mono);font-size:0.75rem;color:var(--accent)">'+a+'</td><td><button onclick="cancelJob(\\''+(j.job_id||jid)+'\\')" style="background:none;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:0.7rem">kill</button></td></tr>';}
   if(!r)r='<tr><td colspan="10" class="empty">no running jobs</td></tr>';
   document.getElementById('jobs-body').innerHTML=r;
 }
@@ -266,6 +266,7 @@ async function addTeam(){
   try{await api('PUT','/api/v1/quotas/'+user,{max_gpus:maxGpus,max_jobs:10,weight:weight});msg.className='msg ok';msg.textContent='team '+user+' created (quota: '+maxGpus+' GPUs)';addLog('team '+user+' added');refresh();}catch(e){msg.className='msg err';msg.textContent='failed';}
 }
 
+async function cancelJob(id){try{await api('DELETE','/api/v1/jobs/'+id);refresh();}catch(e){console.error(e);}}
 async function completeJob(id){try{await api('POST','/api/v1/jobs/'+id+'/complete');refresh();}catch(e){console.error(e);}}
 
 function addLog(t){const l=document.getElementById('event-log'),d=document.createElement('div');d.textContent=new Date().toLocaleTimeString()+'  '+t;l.prepend(d);while(l.children.length>30)l.removeChild(l.lastChild);}

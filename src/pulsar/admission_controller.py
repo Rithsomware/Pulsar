@@ -53,6 +53,16 @@ class AdmissionController:
             return self._can_admit_unlocked(job)
 
     def _can_admit_unlocked(self, job: GPUJob) -> Tuple[bool, str]:
+        # Absolute limits (permanent rejection)
+        if job.gpu_required > self._total_gpus:
+            return False, f"PERMANENT_REJECT: Job requires {job.gpu_required} GPUs, exceeding total cluster capacity ({self._total_gpus})."
+
+        quota = self._quotas.get(job.user)
+        if quota:
+            if job.gpu_required > quota.max_gpus:
+                return False, f"PERMANENT_REJECT: Job requires {job.gpu_required} GPUs, exceeding absolute quota limit ({quota.max_gpus})."
+
+        # Temporary limits (requeue)
         if job.gpu_required > self._available_gpus:
             return False, (
                 f"Insufficient cluster GPUs: need {job.gpu_required}, "
@@ -67,22 +77,26 @@ class AdmissionController:
                     f"available {self._available_memory_gb}GB"
                 )
 
-        quota = self._quotas.get(job.user)
         if quota:
             if job.gpu_required > quota.gpu_available:
                 return False, (
-                    f"User quota exceeded: need {job.gpu_required}, "
+                    f"User quota temporarily exceeded: need {job.gpu_required}, "
                     f"quota allows {quota.gpu_available} more (limit: {quota.max_gpus})"
                 )
             if not quota.can_submit:
                 return False, (
-                    f"Job limit reached: {quota.current_job_count}/{quota.max_jobs} jobs"
+                    f"Job limit temporarily reached: {quota.current_job_count}/{quota.max_jobs} jobs"
                 )
         return True, "OK"
 
     def allocate(self, job: GPUJob) -> PulsarEvent:
-        """Allocate GPU resources for a job."""
+        """Allocate GPU resources for a job.
+
+        IMPORTANT: Call can_admit() first to check before allocating.
+        This method assumes the job has already been approved for admission.
+        """
         with self._lock:
+            # Double-check before allocating (belt and suspenders)
             can, reason = self._can_admit_unlocked(job)
             if not can:
                 job.status = JobStatus.REJECTED
@@ -91,7 +105,8 @@ class AdmissionController:
                     message=f"REJECTED {job.job_id}: {reason}",
                     user=job.user, job_id=job.job_id,
                     metadata={"gpus_requested": job.gpu_required,
-                              "available": self._available_gpus},
+                              "available": self._available_gpus,
+                              "total": self._total_gpus},
                 )
                 self._events.append(event)
                 logger.warning(event.format())

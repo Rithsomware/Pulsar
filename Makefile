@@ -253,7 +253,7 @@ help:
 	@echo "  deploy           Deploy to Kubernetes"
 	@echo "  uninstall        Remove from Kubernetes"
 	@echo "  clean            Clean build artifacts"
-	@echo "  deps             Download dependencies"
+	@echo "  dep s             Download dependencies"
 	@echo ""
 	@echo "Variables:"
 	@echo "  VERSION          Version tag (default: $(VERSION))"

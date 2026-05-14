@@ -144,6 +144,14 @@ class PulsarControlPlane:
                 self.admission_controller.allocate(job)
                 self.fair_scheduler.update_usage(job.user, job.gpu_required)
                 self.fair_scheduler.update_resource_usage(job.user, job.gpu_required, job.gpu_memory_gb)
+                
+                # Restart the execution process so it can complete
+                success, _ = self.executor.execute(job)
+                if not success:
+                    self.admission_controller.release(job.job_id)
+                    self.fair_scheduler.release_usage(job.user, job.gpu_required)
+                    self.fair_scheduler.release_resource_usage(job.user, job.gpu_required, job.gpu_memory_gb)
+                    job.status = JobStatus.FAILED
                 recovered += 1
 
             for job in queued:
@@ -186,13 +194,14 @@ class PulsarControlPlane:
         return job
 
     def cancel_job(self, job_id: str):
-        """Cancel a job and stop its process."""
+        """Cancel a job (queued or running) and stop its process."""
         with self._lock:
             job = self._all_jobs.get(job_id)
             if not job:
-                return
+                logger.warning("Cannot cancel job %s — not found", job_id)
+                return None
 
-            logger.info("Cancelling job %s", job_id)
+            logger.info("Cancelling job %s (status=%s)", job_id, job.status.value)
 
             # Stop the process if it's running
             self.executor.terminate(job)
@@ -201,19 +210,21 @@ class PulsarControlPlane:
             job.status = JobStatus.CANCELLED
             job.completed_at = datetime.now()
 
-            # Release resources
+            # Release resources if the job was scheduled/running
             if job_id in self._scheduled_jobs:
                 self._scheduled_jobs.pop(job_id)
                 self.admission_controller.release(job_id)
                 self.fair_scheduler.release_usage(job.user, job.gpu_required)
                 self.fair_scheduler.release_resource_usage(job.user, job.gpu_required, job.gpu_memory_gb)
+                logger.info("Released resources for job %s", job_id)
+
+            # Notify queue to remove if queued
+            self.queue_controller.cancel_job(job_id)
 
             # Persist
             if self._store:
                 self._store.save_job(job)
 
-            # Notify queue
-            self.queue_controller.cancel_job(job_id)
             self._log_termination(job, "CANCELLED", "user cancelled")
             return job
 
@@ -360,133 +371,135 @@ class PulsarControlPlane:
 
         Flow: Queue → Fairness Selection → Admission → Execution → Track
         """
-        if self.queue_controller.total_queued == 0:
-            return None
+        while True:
+            if self.queue_controller.total_queued == 0:
+                return None
 
-        start_time = time.time()
+            start_time = time.time()
 
-        users_with_jobs = self.queue_controller.users_with_jobs
-        if not users_with_jobs:
-            return None
+            users_with_jobs = self.queue_controller.users_with_jobs
+            if not users_with_jobs:
+                logger.debug("No users with jobs despite total_queued=%d", self.queue_controller.total_queued)
+                return None
 
-        fairness_scores = {
-            user: self.fair_scheduler.get_priority(user)
-            for user in users_with_jobs
-        }
+            fairness_scores = {
+                user: self.fair_scheduler.get_priority(user)
+                for user in users_with_jobs
+            }
 
-        # Handle backfill policy
-        if self.policy == "backfill":
-            return self._process_backfill(fairness_scores, start_time)
+            # Handle backfill policy
+            if self.policy == "backfill":
+                return self._process_backfill(fairness_scores, start_time)
 
-        # Dequeue using configured policy
-        job = self.queue_controller.get_next_job(fairness_scores, policy=self.policy)
-        if not job:
-            return None
+            # Dequeue using configured policy
+            job = self.queue_controller.get_next_job(fairness_scores, policy=self.policy)
+            if not job:
+                return None
 
-        # Admission check
-        can_admit, reason = self.admission_controller.can_admit(job)
-
-        if not can_admit:
-            # Try preemption for high-priority jobs
-            if self.preemption_engine.should_preempt(
-                job, self.admission_controller.available_gpus
-            ):
-                active = self.admission_controller.get_active_jobs()
-                victims, freed = self.preemption_engine.select_victims(
-                    job, active, self.admission_controller.available_gpus
-                )
-                if victims:
-                    for v in victims:
-                        evicted = self.admission_controller.force_release(v.job_id)
-                        if evicted:
-                            # Terminate the K8s pod
-                            self.executor.terminate(evicted)
-                            with self._lock:
-                                self._scheduled_jobs.pop(v.job_id, None)
-                            self.fair_scheduler.release_usage(v.user, v.gpu_required)
-                            self.fair_scheduler.release_resource_usage(v.user, v.gpu_required, v.gpu_memory_gb)
-                            self.metrics.record_preemption(v.user)
-                            self.queue_controller.requeue_job(evicted)
-                            if self._store:
-                                self._store.save_job(evicted)
-
-                    can_admit, reason = self.admission_controller.can_admit(job)
+            # Admission check
+            can_admit, reason = self.admission_controller.can_admit(job)
 
             if not can_admit:
-                if "Insufficient cluster" in reason:
-                    self.queue_controller.requeue_job(job)
-                    return None
-                else:
-                    job.status = JobStatus.REJECTED
-                    self.metrics.record_rejection(job.user)
-                    self.admission_controller.allocate(job)
-                    if self._store:
-                        self._store.save_job(job)
-                    return None
+                # Try preemption for high-priority jobs
+                if self.preemption_engine.should_preempt(
+                    job, self.admission_controller.available_gpus
+                ):
+                    active = self.admission_controller.get_active_jobs()
+                    victims, freed = self.preemption_engine.select_victims(
+                        job, active, self.admission_controller.available_gpus
+                    )
+                    if victims:
+                        for v in victims:
+                            evicted = self.admission_controller.force_release(v.job_id)
+                            if evicted:
+                                # Terminate the K8s pod
+                                self.executor.terminate(evicted)
+                                with self._lock:
+                                    self._scheduled_jobs.pop(v.job_id, None)
+                                self.fair_scheduler.release_usage(v.user, v.gpu_required)
+                                self.fair_scheduler.release_resource_usage(v.user, v.gpu_required, v.gpu_memory_gb)
+                                self.metrics.record_preemption(v.user)
+                                self.queue_controller.requeue_job(evicted)
+                                if self._store:
+                                    self._store.save_job(evicted)
 
-        # Admit the job
-        self.admission_controller.allocate(job)
-        self.fair_scheduler.update_usage(job.user, job.gpu_required)
-        self.fair_scheduler.update_resource_usage(job.user, job.gpu_required, job.gpu_memory_gb)
-        self.metrics.record_admission(job.user, job.gpu_required)
+                        can_admit, reason = self.admission_controller.can_admit(job)
 
-        # Track fairness
-        fi = self.fair_scheduler.compute_jains_fairness_index()
-        self.metrics.record_fairness_index(fi)
-        drf_shares = self.fair_scheduler.compute_drf_shares()
-        for user, drf_data in drf_shares.items():
-            self.metrics.record_drf_dominant_share(user, drf_data.get("dominant_share", 0.0))
-            # approximate GPU share from active allocations
-            active = self.fair_scheduler._active_allocations.get(user, 0)
-            total_gpus = max(1, self.config.cluster.total_gpus)
-            self.metrics.record_gpu_share(user, active / total_gpus)
+                if not can_admit:
+                    if "PERMANENT_REJECT" not in reason:
+                        self.queue_controller.requeue_job(job)
+                        return None
+                    else:
+                        job.status = JobStatus.REJECTED
+                        self.metrics.record_rejection(job.user)
+                        self.admission_controller.allocate(job)
+                        if self._store:
+                            self._store.save_job(job)
+                        continue  # Process the next job in the queue instead of returning None
 
-        # Queue wait time
-        if job.submitted_at:
-            wait = (datetime.now() - job.submitted_at).total_seconds()
-            self.metrics.record_queue_wait(wait)
+            # Admit the job
+            self.admission_controller.allocate(job)
+            self.fair_scheduler.update_usage(job.user, job.gpu_required)
+            self.fair_scheduler.update_resource_usage(job.user, job.gpu_required, job.gpu_memory_gb)
+            self.metrics.record_admission(job.user, job.gpu_required)
 
-        # Decide execution lane (dgpu / igpu / cpu) with fallback policy.
-        self._apply_gpu_fallback_policy(job)
+            # Track fairness
+            fi = self.fair_scheduler.compute_jains_fairness_index()
+            self.metrics.record_fairness_index(fi)
+            drf_shares = self.fair_scheduler.compute_drf_shares()
+            for user, drf_data in drf_shares.items():
+                self.metrics.record_drf_dominant_share(user, drf_data.get("dominant_share", 0.0))
+                # approximate GPU share from active allocations
+                active = self.fair_scheduler._active_allocations.get(user, 0)
+                total_gpus = max(1, self.config.cluster.total_gpus)
+                self.metrics.record_gpu_share(user, active / total_gpus)
 
-        # ═══ EXECUTE: create real K8s pod ═══
-        success, exec_msg = self.executor.execute(job)
-        if not success:
-            # Execution failed — release resources and requeue
-            self.admission_controller.release(job.job_id)
-            self.fair_scheduler.release_usage(job.user, job.gpu_required)
-            self.fair_scheduler.release_resource_usage(job.user, job.gpu_required, job.gpu_memory_gb)
-            job.status = JobStatus.FAILED
+            # Queue wait time
+            if job.submitted_at:
+                wait = (datetime.now() - job.submitted_at).total_seconds()
+                self.metrics.record_queue_wait(wait)
+
+            # Decide execution lane (dgpu / igpu / cpu) with fallback policy.
+            self._apply_gpu_fallback_policy(job)
+
+            # ═══ EXECUTE: create real K8s pod ═══
+            success, exec_msg = self.executor.execute(job)
+            if not success:
+                # Execution failed — release resources and requeue
+                self.admission_controller.release(job.job_id)
+                self.fair_scheduler.release_usage(job.user, job.gpu_required)
+                self.fair_scheduler.release_resource_usage(job.user, job.gpu_required, job.gpu_memory_gb)
+                job.status = JobStatus.FAILED
+                if self._store:
+                    self._store.save_job(job)
+                logger.error("Job %s execution failed: %s", job.job_id, exec_msg)
+                return None
+
+            # Track as running
+            with self._lock:
+                self._scheduled_jobs[job.job_id] = job
+
             if self._store:
                 self._store.save_job(job)
-            logger.error("Job %s execution failed: %s", job.job_id, exec_msg)
-            return None
 
-        # Track as running
-        with self._lock:
-            self._scheduled_jobs[job.job_id] = job
+            self.metrics.record_execution_lane(
+                gpu_class=job.assigned_gpu_class or "unknown",
+                fallback_applied=job.fallback_applied,
+                fallback_reason=job.fallback_reason or "",
+            )
+            if job.assigned_gpu_class:
+                self.metrics.record_gpu_class_job(job.assigned_gpu_class)
 
-        if self._store:
-            self._store.save_job(job)
+            latency_ms = (time.time() - start_time) * 1000
+            self.metrics.record_scheduling_latency(latency_ms)
 
-        self.metrics.record_execution_lane(
-            gpu_class=job.assigned_gpu_class or "unknown",
-            fallback_applied=job.fallback_applied,
-            fallback_reason=job.fallback_reason or "",
-        )
-        if job.assigned_gpu_class:
-            self.metrics.record_gpu_class_job(job.assigned_gpu_class)
-
-        latency_ms = (time.time() - start_time) * 1000
-        self.metrics.record_scheduling_latency(latency_ms)
-
-        logger.info(
-            "[SCHEDULE] %s → %d GPUs (user=%s, policy=%s, mode=%s, latency=%.1fms)",
-            job.job_id, job.gpu_required, job.user, self.policy,
-            "k8s" if self.executor.is_k8s_available else "standalone",
-            latency_ms,
-        )
-        return job
+            logger.info(
+                "[SCHEDULE] %s → %d GPUs (user=%s, policy=%s, mode=%s, latency=%.1fms)",
+                job.job_id, job.gpu_required, job.user, self.policy,
+                "k8s" if self.executor.is_k8s_available else "standalone",
+                latency_ms,
+            )
+            return job
 
     def _process_backfill(self, fairness_scores, start_time) -> Optional[GPUJob]:
         """Backfill scheduling: fit small jobs into available capacity."""

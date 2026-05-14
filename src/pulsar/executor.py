@@ -232,8 +232,9 @@ class JobExecutor:
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now()
 
-        # Calculate duration (compress for demo: 1 min config → 15-60s real)
-        duration_s = max(15, min(120, job.estimated_duration_minutes * 15))
+        # Calculate duration (compress for demo: complete in 15-45s)
+        base_dur = 15 + (hash(job.job_id) % 30)
+        duration_s = max(15, min(45, base_dur))
 
         # GPU memory allocation per unit
         gpu_mem_mb = job.gpu_required * GPU_MEM_PER_UNIT_MB
@@ -247,6 +248,24 @@ class JobExecutor:
             job.assigned_gpu_resource = self._igpu_resource_name
         else:
             job.assigned_gpu_resource = ""
+
+        # CWD must be parent of 'pulsar' package for -m to work
+        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        # Preflight check: verify the worker module is importable from src_dir
+        try:
+            preflight = subprocess.run(
+                [sys.executable, "-c", "import pulsar.gpu_worker"],
+                cwd=src_dir, capture_output=True, text=True, timeout=10,
+            )
+            if preflight.returncode != 0:
+                logger.error(
+                    "[EXECUTOR] Preflight import check failed for %s: %s",
+                    job.job_id, preflight.stderr.strip() or preflight.stdout.strip(),
+                )
+                return False, f"Worker import failed: {preflight.stderr.strip()}"
+        except Exception as e:
+            logger.warning("[EXECUTOR] Preflight check skipped: %s", e)
 
         # Build command — run as module so imports resolve correctly
         cmd = [
@@ -276,8 +295,6 @@ class JobExecutor:
         }
 
         try:
-            # CWD must be parent of 'pulsar' package for -m to work
-            src_dir = os.path.dirname(os.path.dirname(__file__))
             proc = subprocess.Popen(
                 cmd,
                 env=env,
@@ -323,10 +340,22 @@ class JobExecutor:
         """Watch a subprocess and trigger completion when it exits."""
         try:
             returncode = proc.wait(timeout=timeout + 30)  # Extra grace period
+            logger.info("[EXECUTOR] Process %s (PID %d) exited naturally with code %d", job_id, proc.pid, returncode)
         except subprocess.TimeoutExpired:
-            logger.warning("[EXECUTOR] Process %s (PID %d) timed out — killing", job_id, proc.pid)
+            logger.warning("[EXECUTOR] Process %s (PID %d) timed out after %.0fs — killing", job_id, proc.pid, timeout)
             proc.kill()
             returncode = proc.wait()
+            logger.info("[EXECUTOR] Process %s killed (code %d)", job_id, returncode)
+
+        # Capture any remaining output for diagnostics
+        proc_output = ""
+        try:
+            if proc.stdout:
+                raw = proc.stdout.read()
+                if raw:
+                    proc_output = raw.decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
 
         # Determine final status based on exit code
         # Code 0 = Success (COMPLETED)
@@ -335,15 +364,22 @@ class JobExecutor:
         # Other = Error (FAILED)
 
         if returncode == 0:
-            logger.info("Job %s completed successfully", job_id)
+            logger.info("[EXECUTOR] Job %s completed successfully (exit code 0)", job_id)
             if self._on_complete:
                 self._on_complete(job_id)
         elif returncode in (15, -15, 9, -9):
-            logger.info("Job %s was terminated (code %d)", job_id, returncode)
+            logger.info("[EXECUTOR] Job %s was terminated/cancelled (exit code %d)", job_id, returncode)
             # We don't trigger on_complete or on_fail for intentional cancellations
             # The control plane handles status update via cancel_job()
         else:
-            logger.error("Job %s failed with exit code %d", job_id, returncode)
+            # Log the subprocess output to help diagnose the crash
+            if proc_output:
+                logger.error("[EXECUTOR] Job %s output (last 10 lines):", job_id)
+                for line in proc_output.split("\n")[-10:]:
+                    logger.error("[EXECUTOR] [%s] %s", job_id, line)
+            else:
+                logger.error("[EXECUTOR] Job %s failed with no output captured (exit code %d)", job_id, returncode)
+            logger.error("[EXECUTOR] Job %s failed", job_id)
             if self._on_fail:
                 self._on_fail(job_id, f"Exit code {returncode}")
 

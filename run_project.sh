@@ -1,127 +1,112 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-##############################################################################
-# PULSAR Project Runner
-#
-# Runs the PULSAR GPU Queue & Fairness Control Plane locally
+# PULSAR Web App Runner
+# Starts the backend API + website dashboard.
 #
 # Usage:
-#   ./run_project.sh                 # Start API server
-#   ./run_project.sh demo            # Run demo
-#   ./run_project.sh launcher        # Run job launcher example
-##############################################################################
+#   ./run_project.sh          # Start web app (default)
+#   ./run_project.sh start    # Start web app
+#   ./run_project.sh setup    # Only prepare environment
 
-set -e
+set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$PROJECT_DIR/venv"
-SRC_DIR="$PROJECT_DIR/src"
+PYTHON_BIN="$VENV_DIR/bin/python"
+PORT="${PULSAR_PORT:-8080}"
+PORT_FILE="$PROJECT_DIR/.pulsar_webapp_port"
 
-# Colors for output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+RED='\033[0;31m'
+NC='\033[0m'
 
-# Function to print section headers
 print_header() {
-    echo -e "\n${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}  $1${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}\n"
+  echo -e "\n${BLUE}==============================================================${NC}"
+  echo -e "${BLUE}$1${NC}"
+  echo -e "${BLUE}==============================================================${NC}\n"
 }
 
-# Function to print success messages
-print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
+print_ok() { echo -e "${GREEN}[OK]${NC} $1"; }
+print_info() { echo -e "${YELLOW}[INFO]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    print_error "Missing required command: $1"
+    exit 1
+  fi
 }
 
-# Function to print info messages
-print_info() {
-    echo -e "${YELLOW}ℹ $1${NC}"
-}
+setup_env() {
+  require_cmd python3
 
-print_header "PULSAR — GPU Queue & Fairness Control Plane"
-
-# Check if virtual environment exists
-if [ ! -d "$VENV_DIR" ]; then
-    print_info "Creating Python virtual environment..."
+  if [[ ! -x "$PYTHON_BIN" ]]; then
+    print_info "Creating virtual environment at $VENV_DIR"
     python3 -m venv "$VENV_DIR"
-    print_success "Virtual environment created"
-fi
+  fi
 
-# Activate virtual environment
-print_info "Activating virtual environment..."
-source "$VENV_DIR/bin/activate"
-print_success "Virtual environment activated"
+  print_info "Installing/updating dependencies"
+  "$PYTHON_BIN" -m pip install -q --upgrade pip setuptools wheel
+  "$PYTHON_BIN" -m pip install -q -e "$PROJECT_DIR"
 
-# Install dependencies
-print_info "Installing dependencies..."
-pip install -q -e "$SRC_DIR"
-print_success "Dependencies installed"
+  print_ok "Environment is ready"
+}
 
-# Determine which command to run
-COMMAND="${1:-server}"
+check_port_free() {
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof -iTCP:"$PORT" -sTCP:LISTEN -Pn >/dev/null 2>&1; then
+      print_error "Port $PORT is already in use. Stop it or set PULSAR_PORT to a free port."
+      exit 1
+    fi
+  fi
+}
 
-case "$COMMAND" in
-    server)
-        print_header "Starting PULSAR API Server"
-        echo "Available endpoints:"
-        echo "  • Dashboard:     http://localhost:8080/"
-        echo "  • API Docs:      http://localhost:8080/docs"
-        echo "  • Health Check:  http://localhost:8080/health"
-        echo ""
-        echo "Quick CLI commands (in another terminal):"
-        echo "  • pulsar cluster              # Show cluster status"
-        echo "  • pulsar submit --user alice --gpus 2  # Submit job"
-        echo "  • pulsar jobs                 # List jobs"
-        echo "  • pulsar fairness             # Show fairness metrics"
-        echo ""
-        print_info "Press Ctrl+C to stop the server"
-        echo ""
-        cd "$SRC_DIR"
-        python -m pulsar.cli server
-        ;;
+start_webapp() {
+  setup_env
+  check_port_free
 
-    demo)
-        print_header "Running PULSAR Demo"
-        echo "This demo shows the full scheduling pipeline:"
-        echo "  1. Config (16 GPUs, fair-share policy)"
-        echo "  2. Submit jobs from multiple teams"
-        echo "  3. Fair-share scheduling"
-        echo "  4. Preemption of low-priority jobs"
-        echo "  5. Rescheduling and metrics"
-        echo ""
-        cd "$SRC_DIR"
-        python -m pulsar.demo
-        ;;
+  # Record the active webapp port so showcase_judges.sh can reuse it.
+  echo "$PORT" > "$PORT_FILE"
 
-    launcher)
-        print_header "Running Job Launcher Example"
-        echo "This example launches real GPU processes visible in nvidia-smi"
-        echo ""
-        echo "In another terminal, run:"
-        echo "  watch -n 1 nvidia-smi"
-        echo ""
-        echo "You will see real GPU processes with PIDs and VRAM usage."
-        echo ""
-        cd "$SRC_DIR"
-        python -m pulsar.example_launch_jobs
-        ;;
+  print_header "Starting PULSAR Web App"
+  echo "Dashboard:  http://localhost:${PORT}/"
+  echo "API Docs:   http://localhost:${PORT}/docs"
+  echo "Health:     http://localhost:${PORT}/healthz"
+  echo "Readiness:  http://localhost:${PORT}/readyz"
+  echo "Metrics:    http://localhost:${PORT}/api/v1/metrics"
+  echo "Port file:  $PORT_FILE"
+  echo
+  echo "Press Ctrl+C to stop."
 
-    test)
-        print_header "Running Tests"
-        cd "$PROJECT_DIR"
-        pytest tests/ -v
-        ;;
+  cd "$PROJECT_DIR"
+  "$PYTHON_BIN" -m pulsar.cli server
+}
 
+show_help() {
+  cat <<USAGE
+Usage: $0 [start|setup|help]
+
+Commands:
+  start   Start PULSAR web app (default)
+  setup   Prepare venv and install dependencies only
+  help    Show this help
+USAGE
+}
+
+main() {
+  local cmd="${1:-start}"
+  case "$cmd" in
+    start) start_webapp ;;
+    setup) setup_env ;;
+    help|-h|--help) show_help ;;
     *)
-        echo "Usage: $0 {server|demo|launcher|test}"
-        echo ""
-        echo "Commands:"
-        echo "  server     Start the PULSAR API server (default)"
-        echo "  demo       Run the scheduling pipeline demo"
-        echo "  launcher   Launch real GPU jobs (requires GPU)"
-        echo "  test       Run test suite"
-        exit 1
-        ;;
-esac
+      print_error "Unknown command: $cmd"
+      show_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

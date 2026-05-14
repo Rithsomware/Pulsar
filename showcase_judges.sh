@@ -1,314 +1,456 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-##############################################################################
 # PULSAR Judges Showcase
 #
-# Interactive demonstration of PULSAR's key features:
-#  • Real GPU scheduling
-#  • Fair-share allocation
-#  • Per-team quotas
-#  • Preemption
-#  • Live monitoring dashboard
+# Purpose:
+# - Start backend + dashboard
+# - Inject data into backend in timed stages
+# - Let judges watch live processing on website
 #
 # Usage:
 #   ./showcase_judges.sh
-##############################################################################
+#   ./showcase_judges.sh --auto
 
-set -e
+set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$PROJECT_DIR/venv"
-SRC_DIR="$PROJECT_DIR/src"
+PYTHON_BIN="$VENV_DIR/bin/python"
+PORT_FILE="$PROJECT_DIR/.pulsar_webapp_port"
+PORT=""
+BASE_URL=""
+AUTO_MODE="false"
+SERVER_PID=""
+SERVER_STARTED_BY_SCRIPT="false"
+SHOWCASE_CONFIG="$PROJECT_DIR/.showcase_pulsar.yaml"
+SHOWCASE_DB="$PROJECT_DIR/.showcase.db"
+TORCH_AVAILABLE="unknown"
 
-# Colors for output
-BOLD='\033[1m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+BOLD='\033[1m'
+NC='\033[0m'
 
-# Function to print section headers
 print_header() {
-    echo -e "\n${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║${NC} ${BOLD}$1${NC}"
-    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}\n"
+  echo -e "\n${CYAN}==============================================================${NC}"
+  echo -e "${CYAN}${BOLD}$1${NC}"
+  echo -e "${CYAN}==============================================================${NC}\n"
 }
 
-print_subheader() {
-    echo -e "\n${BLUE}▶ $1${NC}\n"
+print_step() { echo -e "${BLUE}> $1${NC}"; }
+print_ok() { echo -e "${GREEN}[OK]${NC} $1"; }
+print_info() { echo -e "${YELLOW}[INFO]${NC} $1"; }
+print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+
+wait_for_enter() {
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    sleep 1
+    return
+  fi
+  echo
+  read -r -p "Press Enter to continue... "
 }
 
-# Function to print success messages
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    print_error "Missing required command: $1"
+    exit 1
+  fi
 }
 
-# Function to print info messages
-print_info() {
-    echo -e "${YELLOW}ℹ${NC} $1"
-}
-
-# Function to pause and wait for user input
-pause_for_input() {
-    echo ""
-    echo -e "${YELLOW}Press Enter to continue...${NC}"
-    read -r
-}
-
-# Setup virtual environment
 setup_environment() {
-    if [ ! -d "$VENV_DIR" ]; then
-        print_info "Creating Python virtual environment..."
-        python3 -m venv "$VENV_DIR"
+  require_cmd python3
+  require_cmd curl
+
+  if [[ ! -x "$PYTHON_BIN" ]]; then
+    print_info "Creating virtual environment"
+    python3 -m venv --system-site-packages "$VENV_DIR"
+  fi
+
+  print_info "Installing dependencies"
+  "$PYTHON_BIN" -m pip install -q --upgrade pip setuptools wheel
+  "$PYTHON_BIN" -m pip install -q -e "$PROJECT_DIR"
+
+  # Kill any stale GPU worker processes from previous runs
+  if pgrep -f "pulsar.gpu_worker" >/dev/null 2>&1; then
+    print_info "Killing stale GPU worker processes"
+    pkill -f "pulsar.gpu_worker" >/dev/null 2>&1 || true
+    sleep 1
+  fi
+
+  # Clean stale showcase database to prevent ghost-state recovery
+  if [[ -f "$SHOWCASE_DB" ]]; then
+    print_info "Removing old showcase database"
+    rm -f "$SHOWCASE_DB"
+  fi
+
+  # Clear .pyc cache to prevent stale bytecode crashes
+  print_info "Clearing Python bytecode cache"
+  find "$PROJECT_DIR/src" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$PROJECT_DIR/src" -name "*.pyc" -delete 2>/dev/null || true
+
+  # Verify GPU worker module is importable
+  if ! "$PYTHON_BIN" -c "import pulsar.gpu_worker" >/dev/null 2>&1; then
+    print_error "pulsar.gpu_worker module failed to import — check installation"
+    "$PYTHON_BIN" -c "import pulsar.gpu_worker" 2>&1 || true
+    exit 1
+  fi
+
+  print_ok "Environment ready (worker verified)"
+}
+
+run_pulsar_cli() {
+  "$PYTHON_BIN" -m pulsar.cli "$@" --url "$BASE_URL"
+}
+
+detect_torch() {
+  if "$PYTHON_BIN" -c "import torch" >/dev/null 2>&1; then
+    TORCH_AVAILABLE="true"
+  else
+    TORCH_AVAILABLE="false"
+  fi
+}
+
+resolve_port() {
+  if [[ -n "${PULSAR_PORT:-}" ]]; then
+    PORT="$PULSAR_PORT"
+    print_info "Using port from PULSAR_PORT: $PORT"
+  elif [[ -f "$PORT_FILE" ]]; then
+    PORT="$(tr -d '[:space:]' < "$PORT_FILE")"
+    if [[ -n "$PORT" ]]; then
+      print_info "Using port from run_project.sh state file: $PORT"
+    else
+      PORT="8080"
+      print_warn "Port file was empty. Falling back to default port $PORT."
     fi
+  else
+    PORT="8080"
+    print_info "No port state file found. Using default port $PORT."
+  fi
 
-    source "$VENV_DIR/bin/activate"
-    pip install -q -e "$SRC_DIR" 2>/dev/null
+  BASE_URL="http://localhost:${PORT}"
 }
 
-# Demo 1: Show project overview
-demo_overview() {
-    print_header "PULSAR — GPU Queue & Fairness Control Plane"
-
-    cat << 'EOF'
-PULSAR is a GPU resource management system that:
-
-  📦  QUEUES GPU workloads with priority ordering
-  ⚖️  ENFORCES fair-share allocation across teams
-  🎯  SETS per-team quotas and resource limits
-  ⏱️  PERFORMS intelligent job preemption
-  🔴  SPAWNS REAL GPU processes (visible in nvidia-smi)
-  📊  PROVIDES real-time monitoring & dashboards
-  🚀  WORKS standalone or in Kubernetes clusters
-
-KEY PRINCIPLE: Each scheduled job is a REAL OS process consuming actual GPU
-memory — not a simulation. You can see jobs in nvidia-smi during execution.
-
-EOF
-
-    print_success "Features Overview"
-    pause_for_input
+check_port_free() {
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof -iTCP:"$PORT" -sTCP:LISTEN -Pn >/dev/null 2>&1; then
+      print_error "Port $PORT is already in use. Stop existing process or set PULSAR_PORT."
+      exit 1
+    fi
+  fi
 }
 
-# Demo 2: Run scheduling simulation
-demo_scheduling() {
-    print_header "DEMO 1: Fair-Share Scheduling Pipeline"
-
-    cat << 'EOF'
-Watch as PULSAR:
-  1️⃣  Initializes a 16-GPU cluster
-  2️⃣  Sets quotas for 3 teams (alpha, beta, gamma)
-  3️⃣  Submits 8 jobs from different teams
-  4️⃣  Schedules jobs fairly based on past usage
-  5️⃣  Preempts low-priority jobs for critical work
-  6️⃣  Tracks fairness index and per-team metrics
-
-EOF
-
-    print_info "Starting scheduling demo..."
-    pause_for_input
-
-    cd "$SRC_DIR"
-    python -m pulsar.demo
-
-    pause_for_input
+open_dashboard() {
+  print_info "Open dashboard: ${BASE_URL}/"
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "${BASE_URL}/" >/dev/null 2>&1 &
+  elif command -v open >/dev/null 2>&1; then
+    open "${BASE_URL}/" >/dev/null 2>&1 &
+  fi
 }
 
-# Demo 3: Show real-time API and metrics
-demo_api_metrics() {
-    print_header "DEMO 2: Real-Time API & Metrics"
+prepare_showcase_config() {
+  rm -f "$SHOWCASE_DB"
 
-    cat << 'EOF'
-Starting PULSAR API server on http://localhost:8080
+  cat > "$SHOWCASE_CONFIG" <<CFG
+cluster:
+  total_gpus: 16
+  gpu_memory_gb: 6
+  gpu_memory_mb: 6144
+  gpu_resource_name: nvidia.com/gpu
+  dgpu_resource_name: nvidia.com/gpu
+  igpu_resource_name: gpu.intel.com/i915
+  nodes:
+    - showcase-node-1
+    - showcase-node-2
 
-Available endpoints:
-  🖥️  Dashboard:        http://localhost:8080/
-  📖 API Docs:         http://localhost:8080/docs (Swagger UI)
-  ❤️  Health Check:     http://localhost:8080/health
-  📊 Metrics:           http://localhost:8080/metrics (Prometheus)
+scheduling:
+  policy: fair_share
+  scheduling_interval_seconds: 2
+  preemption:
+    enabled: true
+    grace_period_seconds: 30
+    max_preemptions_per_cycle: 3
+  fallback:
+    preferred_gpu_class: dgpu
+    fallback_gpu_class: igpu
+    max_dgpu_wait_seconds: 0
+  queue_controller:
+    aging_enabled: true
+    aging_boost_interval_seconds: 30.0
+    starvation_threshold_seconds: 60.0
 
-OPEN IN YOUR BROWSER:
-  http://localhost:8080/
+quotas:
+  team-alpha:
+    max_gpus: 16
+    max_jobs: 20
+    weight: 1.0
+  team-beta:
+    max_gpus: 16
+    max_jobs: 20
+    weight: 1.0
+  team-gamma:
+    max_gpus: 16
+    max_jobs: 20
+    weight: 0.5
 
-The dashboard shows:
-  ✓ Cluster utilization & GPU availability
-  ✓ Active jobs and their status
-  ✓ Per-team resource usage
-  ✓ Fairness index (Jain's fairness)
-  ✓ Queue depth and job completion rates
+api:
+  host: 0.0.0.0
+  port: ${PORT}
 
-EOF
+persistence:
+  database: ${SHOWCASE_DB}
+  enabled: true
 
-    print_info "Server will run for 90 seconds to allow you to explore the dashboard"
-    pause_for_input
+logging:
+  level: INFO
+  format: text
+CFG
 
-    print_info "Starting API server..."
-    cd "$SRC_DIR"
-
-    # Start server in background
-    timeout 90 python -m pulsar.cli server 2>/dev/null || true
-
-    echo ""
-    pause_for_input
+  print_ok "Fresh showcase config prepared: $SHOWCASE_CONFIG"
 }
 
-# Demo 4: Show CLI capabilities
-demo_cli() {
-    print_header "DEMO 3: Command-Line Interface"
+start_server() {
+  check_port_free
+  prepare_showcase_config
 
-    cat << 'EOF'
-PULSAR provides a full-featured CLI for managing GPU jobs:
+  print_step "Starting PULSAR backend for showcase"
+  cd "$PROJECT_DIR"
+  "$PYTHON_BIN" -m pulsar.cli server --config "$SHOWCASE_CONFIG" > "$PROJECT_DIR/.showcase_server.log" 2>&1 &
+  SERVER_PID=$!
+  SERVER_STARTED_BY_SCRIPT="true"
 
-Command Syntax & Examples:
+  print_info "Waiting for readiness"
+  local retries=50
+  local attempt=1
+  while [[ $attempt -le $retries ]]; do
+    if curl -fsS "${BASE_URL}/readyz" >/dev/null 2>&1; then
+      print_ok "Backend is ready"
+      return
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
 
-  pulsar server                          Start the API server
-  pulsar submit --user TEAM --gpus N     Submit a job to queue
-  pulsar jobs [--user TEAM]              List all jobs
-  pulsar status <job-id>                 Get job details
-  pulsar cancel <job-id>                 Cancel a job
-  pulsar cluster                         Show cluster status
-  pulsar fairness                        Show fairness metrics
-  pulsar quotas                          List per-team quotas
-
-PRACTICAL WORKFLOW:
-  1. Start server:        pulsar server
-  2. In another terminal:
-     - Submit jobs:       pulsar submit --user alice --gpus 2
-     - Check status:      pulsar jobs
-     - View fairness:     pulsar fairness
-     - Check cluster:     pulsar cluster
-
-EOF
-
-    print_success "CLI Overview"
-    pause_for_input
+  print_error "Server did not become ready. Last logs:"
+  tail -n 40 "$PROJECT_DIR/.showcase_server.log" || true
+  exit 1
 }
 
-# Demo 5: Show architecture
-demo_architecture() {
-    print_header "DEMO 4: System Architecture"
-
-    cat << 'EOF'
-PULSAR Architecture:
-
-    ┌─────────────────────────────────────────────────────┐
-    │                 Job Submission                       │
-    │         (CLI / API / Dashboard / K8s API)            │
-    └──────────────────┬──────────────────────────────────┘
-                       │
-    ┌──────────────────▼──────────────────────────────────┐
-    │              QUEUE MANAGER                           │
-    │  Stores jobs, enforces per-team quotas, priorities   │
-    └──────────────────┬──────────────────────────────────┘
-                       │
-    ┌──────────────────▼──────────────────────────────────┐
-    │              SCHEDULER (Pluggable)                   │
-    │  • Fair-Share    — Balance team usage                │
-    │  • FIFO          — First-come, first-served         │
-    │  • Priority      — Custom job priority              │
-    │  • Backfill      — Fill unused slots intelligently   │
-    └──────────────────┬──────────────────────────────────┘
-                       │
-    ┌──────────────────▼──────────────────────────────────┐
-    │           ADMISSION & PREEMPTION                     │
-    │  Check quotas, evict low-priority jobs if needed     │
-    └──────────────────┬──────────────────────────────────┘
-                       │
-    ┌──────────────────▼──────────────────────────────────┐
-    │              EXECUTOR                               │
-    │  Spawn real subprocess → visible in nvidia-smi       │
-    │  Track PID → GPU mapping, memory usage               │
-    └──────────────────┬──────────────────────────────────┘
-                       │
-    ┌──────────────────▼──────────────────────────────────┐
-    │         MONITORING & METRICS                         │
-    │  • Prometheus metrics (/metrics)                     │
-    │  • Dashboard (web UI)                                │
-    │  • Fairness tracking (Jain's index)                  │
-    │  • Job history (persistent SQLite)                   │
-    └──────────────────────────────────────────────────────┘
-
-KEY STRENGTH: Real execution with PID mapping & OS-level process tracking
-             (Not a simulator — actual GPU memory consumption)
-
-EOF
-
-    print_success "Architecture Overview"
-    pause_for_input
+server_ready() {
+  curl -fsS "${BASE_URL}/readyz" >/dev/null 2>&1
 }
 
-# Demo 6: Key differentiators
-demo_differentiators() {
-    print_header "DEMO 5: Why PULSAR is Different"
-
-    cat << 'EOF'
-Comparison with other solutions:
-
-                    PULSAR      Kubernetes    Slurm      Custom
-─────────────────────────────────────────────────────────────────────
-Real GPU Execution   ✅ YES      ❌ Pods       ✅ YES      Varies
-Fair-Share Schedule  ✅ YES      ❌ No         ✅ YES      Complex
-Per-Team Quotas      ✅ YES      ✅ Yes        ✅ YES      ✅ Yes
-Smart Preemption     ✅ YES      ⚠️  Limited   ✅ YES      Complex
-PID Tracking         ✅ YES      ❌ No         ✅ YES      Hard
-Lightweight Setup    ✅ YES      ❌ Heavy      ⚠️  Medium  ✅ Yes
-Standalone Mode      ✅ YES      ❌ No         ❌ No       ✅ Yes
-K8s Integration      ✅ YES      ✅ Native     ✅ YES      Varies
-─────────────────────────────────────────────────────────────────────
-
-🎯 PULSAR's UNIQUE ADVANTAGE:
-   Combines simplicity of standalone GPU scheduling with
-   the power of Kubernetes integration — choose your deployment!
-
-EOF
-
-    print_success "Key Differentiators"
-    pause_for_input
+ensure_server() {
+  if server_ready; then
+    print_ok "Detected already running backend at ${BASE_URL} (reusing it)"
+    return
+  fi
+  start_server
 }
 
-# Main showcase flow
+configure_showcase_quotas() {
+  print_step "Configuring non-restrictive showcase quotas"
+  local teams=("team-alpha" "team-beta" "team-gamma")
+  local weights=("1.0" "1.0" "0.5")
+  local i=0
+  local failed=0
+
+  for team in "${teams[@]}"; do
+    local weight="${weights[$i]}"
+    print_info "Setting quota for $team: max_gpus=16, max_jobs=20, weight=$weight"
+    response=$(curl -fS -X PUT "${BASE_URL}/api/v1/quotas/${team}" \
+      -H "Content-Type: application/json" \
+      -d "{\"max_gpus\":16,\"max_jobs\":20,\"weight\":${weight}}" 2>&1)
+
+    if [[ $? -ne 0 ]]; then
+      print_error "Failed to set quota for $team: $response"
+      failed=$((failed + 1))
+    else
+      print_ok "Quota configured for $team"
+    fi
+    i=$((i + 1))
+  done
+
+  if [[ $failed -gt 0 ]]; then
+    print_warn "$failed quotas failed to configure — jobs may be rejected!"
+  fi
+
+  print_info "Verifying quotas were applied..."
+  sleep 1
+  response=$(curl -fS "${BASE_URL}/api/v1/quotas" 2>&1)
+  if [[ $? -eq 0 ]]; then
+    print_ok "Quotas endpoint accessible"
+  else
+    print_warn "Could not verify quotas: $response"
+  fi
+  print_ok "Showcase quota configuration complete"
+}
+
+cleanup() {
+  if [[ "$SERVER_STARTED_BY_SCRIPT" == "true" ]] && [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+    kill "$SERVER_PID" >/dev/null 2>&1 || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+}
+
+show_intro() {
+  print_header "Live Website Showcase Flow"
+  cat <<TEXT
+1) Web app starts and dashboard opens
+2) Script injects backend jobs in timed waves
+3) Judges watch queue/running/fairness/metrics update live on website
+TEXT
+
+  if [[ "$TORCH_AVAILABLE" == "false" ]]; then
+    print_warn "torch is not installed (DNS blocked pypi.org earlier)."
+    print_info "Jobs may transition quickly to FAILED, but backend processing and dashboard updates are still visible."
+  else
+    print_ok "torch detected: real worker execution path available"
+  fi
+
+  wait_for_enter
+}
+
+submit_job() {
+  local user="$1"
+  local gpus="$2"
+  local priority="$3"
+  local workload="$4"
+  local framework="$5"
+
+  run_pulsar_cli submit --user "$user" --gpus "$gpus" --priority "$priority" --type "$workload" --framework "$framework"
+}
+
+inject_wave_one() {
+  print_header "Wave 1: Baseline Workload"
+  print_step "Submitting jobs - watch Running Jobs and Queue sections on dashboard"
+
+  submit_job team-alpha 2 NORMAL Training PyTorch
+  sleep 2
+  submit_job team-beta 2 NORMAL Inference Triton
+  sleep 2
+  submit_job team-gamma 1 NORMAL Training JAX
+
+  print_ok "Wave 1 submitted"
+  print_info "Watching live updates for 8 seconds"
+  sleep 8
+}
+
+inject_wave_two() {
+  print_header "Wave 2: Queue Pressure"
+  print_step "Submitting heavier requests to stress fairness + queue behavior"
+
+  submit_job team-alpha 2 HIGH FineTuning PyTorch
+  sleep 2
+  submit_job team-beta 2 HIGH Training TensorFlow
+  sleep 2
+  submit_job team-gamma 1 NORMAL Inference Triton
+
+  print_ok "Wave 2 submitted"
+  print_info "Watching live updates for 10 seconds"
+  sleep 10
+}
+
+inject_wave_three() {
+  print_header "Wave 3: Priority Spike"
+  print_step "Submitting CRITICAL job so judges can see priority impact"
+
+  submit_job team-beta 2 CRITICAL Training PyTorch
+
+  print_ok "Critical workload submitted"
+  print_info "Watching live updates for 12 seconds"
+  sleep 12
+}
+
+show_terminal_snapshot() {
+  print_header "Terminal Snapshot (for narration)"
+
+  print_step "Jobs"
+  run_pulsar_cli jobs
+  echo
+
+  print_step "Cluster"
+  run_pulsar_cli cluster
+  echo
+
+  print_step "Fairness"
+  run_pulsar_cli fairness
+  echo
+
+  print_step "Metrics sample"
+  curl -fsS "${BASE_URL}/api/v1/metrics" | sed -n '1,20p'
+}
+
+show_judge_notes() {
+  print_header "Judge Narrative"
+  cat <<TEXT
+- Data was injected into backend in staged waves.
+- Live dashboard reflected backend processing in near real-time.
+- Queue depth, running jobs, fairness, and metrics all changed live.
+- This is a real control-plane flow, not static UI playback.
+TEXT
+
+  print_info "Useful links"
+  echo "Dashboard: ${BASE_URL}/"
+  echo "API docs:  ${BASE_URL}/docs"
+  echo "Health:    ${BASE_URL}/healthz"
+  echo "Ready:     ${BASE_URL}/readyz"
+  echo "Metrics:   ${BASE_URL}/api/v1/metrics"
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --auto)
+        AUTO_MODE="true"
+        ;;
+      -h|--help)
+        cat <<USAGE
+Usage: $0 [--auto]
+
+Options:
+  --auto   Run with minimal pauses
+USAGE
+        exit 0
+        ;;
+      *)
+        print_error "Unknown argument: $1"
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
+
 main() {
-    print_info "Setting up environment..."
-    setup_environment
-    print_success "Environment ready"
+  parse_args "$@"
+  trap cleanup EXIT
 
-    # Run demos in sequence
-    demo_overview
-    demo_scheduling
-    demo_api_metrics
-    demo_cli
-    demo_architecture
-    demo_differentiators
+  resolve_port
+  setup_environment
+  detect_torch
+  show_intro
+  ensure_server
+  configure_showcase_quotas
+  open_dashboard
 
-    # Final summary
-    print_header "Showcase Complete!"
+  inject_wave_one
+  wait_for_enter
+  inject_wave_two
+  wait_for_enter
+  inject_wave_three
+  wait_for_enter
 
-    cat << 'EOF'
-To continue exploring PULSAR:
+  show_terminal_snapshot
+  show_judge_notes
 
-START THE SERVER:
-  cd /home/rithsomware/Downloads/Pulsar
-  source venv/bin/activate
-  pulsar server
-
-THEN IN ANOTHER TERMINAL:
-  pulsar submit --user alice --gpus 2
-  pulsar jobs
-  pulsar cluster
-  pulsar fairness
-
-DOCUMENTATION:
-  README.md              — Full feature documentation
-  docs/                  — Architecture diagrams
-  src/pulsar/            — Source code with docstrings
-  tests/                 — Test examples
-
-EOF
-
-    print_success "Thank you for exploring PULSAR!"
+  print_ok "Showcase completed"
+  print_info "Server log: $PROJECT_DIR/.showcase_server.log"
 }
 
-# Run the showcase
-main
+main "$@"
